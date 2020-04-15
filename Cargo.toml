@@ -1,13 +1,17 @@
 [package]
-name = "raii-counter"
-version = "0.2.1"
+name = "raii-counter-futures"
+version = "0.1.0"
 license = "MIT"
-authors = ["Darren Tsung <darren@onesignal.com>"]
-description = "RAII Counter."
-homepage = "https://github.com/DarrenTsung/raii-counter"
-repository = "https://github.com/DarrenTsung/raii-counter"
+authors = ["Darren Tsung <darren@onesignal.com>", "Nate Mara <nate@onesignal.com>"]
+description = "RAII Counter that allows you to wait for a count of zero asynchronously"
+homepage = "https://github.com/nate-onesignal/raii-counter-futures"
+repository = "https://github.com/DarrenTsung/raii-counter-futures"
 readme = "README.md"
-keywords = ["counter", "raii"]
-
+keywords = ["counter", "raii", "async"]
+edition = "2018"
 
 [dependencies]
+futures-intrusive = "0.3"
+
+[dev-dependencies]
+tokio = { version = "0.2", features = ["full"] }

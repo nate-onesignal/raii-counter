@@ -8,8 +8,7 @@
 //! ## Demo
 //!
 //! ```rust
-//! extern crate raii_counter;
-//! use raii_counter::Counter;
+//! use raii_counter_futures::Counter;
 //!
 //! let counter = Counter::new();
 //! assert_eq!(counter.count(), 1);
@@ -28,20 +27,22 @@
 //! ```
 
 use std::fmt::{self, Display, Formatter};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+
+mod internal;
 
 /// Essentially an AtomicUsize that is clonable and whose count is based
 /// on the number of copies. The count is automatically updated on Drop.
 #[derive(Debug)]
 pub struct Counter {
-    counter: Arc<AtomicUsize>,
+    counter: internal::Counter,
     size: usize,
 }
 
 /// A 'weak' Counter that does not affect the count.
 #[derive(Clone, Debug)]
-pub struct WeakCounter(Arc<AtomicUsize>);
+pub struct WeakCounter {
+    counter: internal::Counter,
+}
 
 impl Counter {
     pub fn new() -> Counter {
@@ -50,7 +51,7 @@ impl Counter {
 
     pub fn new_with_size(size: usize) -> Counter {
         Counter {
-            counter: Arc::new(AtomicUsize::new(1)),
+            counter: internal::Counter::new(1),
             size,
         }
     }
@@ -58,20 +59,27 @@ impl Counter {
     /// Consume self (causing the count to decrease by 1)
     /// and return a weak reference to the count through a WeakCounter
     pub fn downgrade(self) -> WeakCounter {
-        WeakCounter(self.counter.clone())
+        WeakCounter {
+            counter: self.counter.clone(),
+        }
     }
 
     /// This method is inherently racey. Assume the count will have changed once
     /// the value is observed.
     #[inline]
     pub fn count(&self) -> usize {
-        self.counter.load(Ordering::Acquire)
+        self.counter.get()
+    }
+
+    /// Returns a future that waits until the counter contains a 0 value
+    pub async fn wait_for_empty(&self) {
+        self.counter.wait_for_empty().await;
     }
 }
 
 impl Clone for Counter {
     fn clone(&self) -> Self {
-        self.counter.fetch_add(self.size, Ordering::AcqRel);
+        self.counter.fetch_add(self.size);
         Counter {
             counter: self.counter.clone(),
             size: self.size,
@@ -87,20 +95,22 @@ impl Display for Counter {
 
 impl Drop for Counter {
     fn drop(&mut self) {
-        self.counter.fetch_sub(self.size, Ordering::AcqRel);
+        self.counter.fetch_sub(self.size);
     }
 }
 
 impl WeakCounter {
     pub fn new() -> WeakCounter {
-        WeakCounter(Arc::new(AtomicUsize::new(0)))
+        WeakCounter {
+            counter: internal::Counter::new(0),
+        }
     }
 
     /// This method is inherently racey. Assume the count will have changed once
     /// the value is observed.
     #[inline]
     pub fn count(&self) -> usize {
-        self.0.load(Ordering::Acquire)
+        self.counter.get()
     }
 
     /// Consumes self, becomes a Counter
@@ -116,11 +126,16 @@ impl WeakCounter {
 
     /// Instead of clone + upgrade, this will only clone once
     pub fn spawn_upgrade_with_size(&self, size: usize) -> Counter {
-        self.0.fetch_add(size, Ordering::AcqRel);
+        self.counter.fetch_add(size);
         Counter {
-            counter: self.0.clone(),
+            counter: self.counter.clone(),
             size,
         }
+    }
+
+    /// Returns a future that waits until the counter contains a 0 value
+    pub async fn wait_for_empty(&self) {
+        self.counter.wait_for_empty().await;
     }
 }
 
@@ -133,6 +148,8 @@ impl Display for WeakCounter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+    use tokio::time::delay_for;
 
     #[test]
     fn it_works() {
@@ -168,5 +185,31 @@ mod tests {
         }
 
         assert_eq!(weak.count(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_empty_works() {
+        let start = Instant::now();
+        let weak = WeakCounter::new();
+
+        let counter1 = weak.spawn_upgrade();
+        let counter2 = counter1.clone();
+        let counter3 = counter2.clone();
+        tokio::spawn(async move {
+            delay_for(Duration::from_millis(250)).await;
+            drop(counter1);
+
+            delay_for(Duration::from_millis(500)).await;
+            drop(counter2);
+
+            delay_for(Duration::from_millis(100)).await;
+            drop(counter3);
+        });
+
+        weak.wait_for_empty().await;
+        let elapsed = start.elapsed();
+
+        assert!(elapsed >= Duration::from_millis(850));
+        assert!(elapsed < Duration::from_millis(900));
     }
 }
